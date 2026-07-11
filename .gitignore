@@ -1,0 +1,20 @@
+# Rust
+akam-core/target/
+
+# Gradle / Android
+akam-android/.gradle/
+akam-android/build/
+akam-android/app/build/
+akam-android/local.properties
+akam-android/.kotlin/
+
+# generated at build time (cargo-ndk + uniffi-bindgen)
+akam-android/app/src/main/jniLibs/
+
+# IDE / OS
+.idea/
+*.iml
+.DS_Store
+
+# empty .git left by `cargo new`, parked to keep this a single repo
+akam-core/.git-unused-empty/
