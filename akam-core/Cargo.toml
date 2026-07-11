@@ -1,0 +1,25 @@
+[package]
+name = "akam-core"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "akam_core"
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[features]
+cli = ["uniffi/cli"]
+
+[dependencies]
+uniffi = "0.32"
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[build-dependencies]
+uniffi = { version = "0.32", features = ["build"] }

@@ -1,0 +1,79 @@
+namespace akam {};
+
+dictionary Note {
+    i64 id;
+    string title;
+    string body;
+    i64 created_at;
+    i64 updated_at;
+    boolean is_deleted;
+    boolean is_pinned;
+    i64? trashed_at;
+};
+
+dictionary Tag {
+    i64 id;
+    string name;
+    i64? parent_id;
+    i64 note_count;
+};
+
+dictionary RichSpan {
+    i32 start;
+    i32 end;
+    string style;
+};
+
+dictionary RichText {
+    string text;
+    sequence<RichSpan> spans;
+};
+
+[Error]
+enum AkamError {
+    "Database",
+};
+
+interface AkamDb {
+    [Throws=AkamError]
+    constructor(string path);
+
+    [Throws=AkamError]
+    Note create_note();
+
+    [Throws=AkamError]
+    Note? get_note(i64 id);
+
+    [Throws=AkamError]
+    RichText? get_content(i64 id);
+
+    [Throws=AkamError]
+    void set_content(i64 id, RichText content);
+
+    [Throws=AkamError]
+    sequence<Note> list_notes(string? tag);
+
+    [Throws=AkamError]
+    void set_pinned(i64 id, boolean pinned);
+
+    [Throws=AkamError]
+    void move_to_trash(i64 id);
+
+    [Throws=AkamError]
+    void restore_from_trash(i64 id);
+
+    [Throws=AkamError]
+    void delete_permanently(i64 id);
+
+    [Throws=AkamError]
+    sequence<Note> list_untagged();
+
+    [Throws=AkamError]
+    sequence<Note> get_trashed_notes();
+
+    [Throws=AkamError]
+    sequence<Note> search_notes(string query);
+
+    [Throws=AkamError]
+    sequence<Tag> list_tags();
+};
