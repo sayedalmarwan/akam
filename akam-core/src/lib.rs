@@ -431,9 +431,19 @@ impl AkamDb {
         Ok(notes)
     }
 
-    // ponytail: query goes straight to FTS5 MATCH — operators like AND/OR/* work,
-    // unbalanced quotes raise AkamError. Sanitize here if that ever bites.
+    /// Sanitized FTS5 search: every token is quoted (embedded quotes doubled)
+    /// so user input can't inject MATCH syntax or crash on specials, and the
+    /// last token gets a `*` prefix operator so short/partial queries match
+    /// as-you-type ("q" finds "quantum").
     pub fn search_notes(&self, query: String) -> Result<Vec<Note>, AkamError> {
+        let tokens: Vec<String> = query
+            .split_whitespace()
+            .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+            .collect();
+        if tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+        let fts = tokens.join(" ") + "*";
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT n.id, n.title, n.body, n.created_at, n.updated_at, n.is_deleted,
@@ -442,7 +452,7 @@ impl AkamDb {
              WHERE notes_fts MATCH ?1 AND n.is_deleted = 0 ORDER BY rank",
         )?;
         let notes = stmt
-            .query_map([query], row_to_note)?
+            .query_map([fts], row_to_note)?
             .collect::<Result<_, _>>()?;
         Ok(notes)
     }
@@ -594,6 +604,30 @@ mod tests {
         assert!(db.get_trashed_notes().unwrap().is_empty());
         assert_eq!(db.list_tags().unwrap().len(), 2);
         assert!(db.get_note(note.id).unwrap().unwrap().trashed_at.is_none());
+    }
+
+    #[test]
+    fn search_finds_only_matching_note() {
+        let db = AkamDb::new(":memory:".into()).unwrap();
+        for (a, b) in [
+            ("Groceries", "milk and eggs"),
+            ("Quantum notes", "entanglement and superposition"),
+            ("Trip", "flights to Tokyo"),
+        ] {
+            let n = db.create_note().unwrap();
+            db.set_content(n.id, rich(&format!("{a}\n{b}"), vec![])).unwrap();
+        }
+        // term unique to one note
+        assert_eq!(db.search_notes("entanglement".into()).unwrap().len(), 1);
+        // prefix / partial matches as-you-type
+        assert_eq!(db.search_notes("quant".into()).unwrap().len(), 1);
+        // tags (stored in body as #text) are searchable
+        let tagged = db.create_note().unwrap();
+        db.set_content(tagged.id, rich("Tagged\n#physics", vec![])).unwrap();
+        assert_eq!(db.search_notes("physics".into()).unwrap().len(), 1);
+        // special characters don't crash FTS
+        assert!(db.search_notes("\"quote (paren".into()).unwrap().is_empty());
+        assert!(db.search_notes("".into()).unwrap().is_empty());
     }
 
     #[test]

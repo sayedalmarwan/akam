@@ -109,6 +109,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.TextStyle
 import java.util.Locale
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -136,40 +137,38 @@ private fun HeaderBar(
     navigation: (@Composable () -> Unit)? = null,
     actions: (@Composable RowScope.() -> Unit)? = null,
 ) {
-    // flat header: transparent, seamless with whatever surface it sits on
-    Surface(color = Color.Transparent) {
-        Box(Modifier.fillMaxWidth().height(56.dp)) {
-            navigation?.let {
-                Box(Modifier.align(Alignment.CenterStart).padding(start = 4.dp)) { it() }
-            }
-            Column(
-                Modifier.align(Alignment.Center).padding(horizontal = 56.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
+    // flat header: no background of its own, seamless with the window
+    Box(Modifier.fillMaxWidth().height(56.dp)) {
+        navigation?.let {
+            Box(Modifier.align(Alignment.CenterStart).padding(start = 4.dp)) { it() }
+        }
+        Column(
+            Modifier.align(Alignment.Center).padding(horizontal = 56.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = if (titleBold) FontWeight.Bold else FontWeight.Medium,
+                color = titleColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            subtitle?.let {
                 Text(
-                    title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = if (titleBold) FontWeight.Bold else FontWeight.Medium,
-                    color = titleColor,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                subtitle?.let {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1
-                    )
-                }
-            }
-            actions?.let {
-                Row(
-                    Modifier.align(Alignment.CenterEnd).padding(end = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    content = it
+                    it,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
                 )
             }
+        }
+        actions?.let {
+            Row(
+                Modifier.align(Alignment.CenterEnd).padding(end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                content = it
+            )
         }
     }
 }
@@ -353,11 +352,14 @@ private fun NotesContent(
     var notes by remember { mutableStateOf(emptyList<Note>()) }
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val searching = query.isNotBlank()
     LaunchedEffect(filter, query, refresh) {
+        // debounce keystrokes: a new query cancels this coroutine before delay ends
+        if (searching) delay(150)
         notes = withContext(Dispatchers.IO) { loadNotes(db, filter, query) }
         // the filtered tag can vanish while we're away (edit removed its last
         // use); fall back to All Notes instead of a dead "0 Notes" screen
-        if (notes.isEmpty() && filter?.startsWith("tag:") == true) {
+        if (notes.isEmpty() && !searching && filter?.startsWith("tag:") == true) {
             val name = filter.removePrefix("tag:")
             val exists = withContext(Dispatchers.IO) { db.listTags().any { it.name == name } }
             if (!exists) onFilterInvalid()
@@ -365,8 +367,8 @@ private fun NotesContent(
     }
     val sections: Map<String, List<Note>> = remember(notes, query, filter) {
         when {
-            query.isNotBlank() ->
-                mapOf("${notes.size} ${if (notes.size == 1) "result" else "results"}" to notes)
+            // search results are a flat list; the count sits by the search bar
+            searching -> if (notes.isEmpty()) emptyMap() else mapOf("" to notes)
             notes.isEmpty() -> emptyMap()
             filter == "pinned" -> mapOf("Pinned" to notes)
             filter == null -> {
@@ -400,7 +402,7 @@ private fun NotesContent(
         Box(Modifier.weight(1f)) {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 8.dp, bottom = 100.dp)) {
                 sections.forEach { (label, group) ->
-                    item(key = "header-$label") { GroupLabel(label) }
+                    if (label.isNotEmpty()) item(key = "header-$label") { GroupLabel(label) }
                     item(key = "card-$label") {
                         BoxedList {
                             group.forEachIndexed { i, note ->
@@ -408,24 +410,39 @@ private fun NotesContent(
                                 // recycled across different notes as rows shift
                                 key(note.id) {
                                 NoteRow(
-                                    db, note, query, isTrash,
+                                    note, query, isTrash,
                                     onOpen = onOpenNote,
-                                    onTrashed = { trashed ->
+                                    onPin = {
                                         scope.launch {
-                                            val result = snackbar.showSnackbar(
-                                                message = "Moved to trash",
-                                                actionLabel = "Undo",
-                                                duration = SnackbarDuration.Short
-                                            )
-                                            if (result == SnackbarResult.ActionPerformed) {
-                                                withContext(Dispatchers.IO) {
-                                                    db.restoreFromTrash(trashed.id)
+                                            withContext(Dispatchers.IO) {
+                                                db.setPinned(note.id, !note.isPinned)
+                                            }
+                                            refresh++
+                                        }
+                                    },
+                                    onDismiss = {
+                                        scope.launch {
+                                            withContext(Dispatchers.IO) {
+                                                if (isTrash) db.restoreFromTrash(note.id)
+                                                else db.moveToTrash(note.id)
+                                            }
+                                            refresh++
+                                            if (!isTrash) {
+                                                val result = snackbar.showSnackbar(
+                                                    message = "Moved to trash",
+                                                    actionLabel = "Undo",
+                                                    duration = SnackbarDuration.Short
+                                                )
+                                                if (result == SnackbarResult.ActionPerformed) {
+                                                    withContext(Dispatchers.IO) {
+                                                        db.restoreFromTrash(note.id)
+                                                    }
+                                                    refresh++
                                                 }
-                                                refresh++
                                             }
                                         }
-                                    }
-                                ) { refresh++ }
+                                    },
+                                )
                                 }
                                 if (i < group.lastIndex) {
                                     HorizontalDivider(
@@ -438,8 +455,37 @@ private fun NotesContent(
                     }
                 }
             }
+            // centered empty state when a search returns nothing
+            if (searching && notes.isEmpty()) {
+                Text(
+                    "No notes found for \"$query\"",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 32.dp)
+                )
+            }
             // bottom search pill; end padding leaves room for the FAB
             if (!isTrash) {
+                // result count floats just above the search bar while searching
+                if (searching) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(start = 20.dp, bottom = 80.dp)
+                            .imePadding()
+                    ) {
+                        Text(
+                            "${notes.size} ${if (notes.size == 1) "result" else "results"}",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                        )
+                    }
+                }
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
@@ -498,8 +544,7 @@ private fun loadNotes(db: AkamDb, filter: String?, query: String): List<Note> = 
         // ponytail: todo filters client-side on the checkbox glyph; SQL when counts hurt
         filter == "todo" -> db.listNotes(null).filter { it.body.contains("☐") }
         filter == "trash" -> db.getTrashedNotes()
-        filter.startsWith("tag:") -> db.listNotes(filter.removePrefix("tag:"))
-        else -> db.listNotes(null)
+        else -> db.listNotes(filter.removePrefix("tag:"))
     }
 } catch (_: AkamException) {
     emptyList() // e.g. unbalanced quotes in an FTS query mid-typing
@@ -507,31 +552,25 @@ private fun loadNotes(db: AkamDb, filter: String?, query: String): List<Note> = 
 
 @Composable
 private fun NoteRow(
-    db: AkamDb,
     note: Note,
     query: String,
     isTrash: Boolean,
     onOpen: (Long) -> Unit,
-    onTrashed: (Note) -> Unit,
-    onChanged: () -> Unit,
+    onPin: () -> Unit,
+    onDismiss: () -> Unit,
 ) {
+    // db work happens in the parent's scope: this row's scope dies with the
+    // row when a dismiss removes it from composition
     val dismissState = rememberSwipeToDismissBoxState(
         confirmValueChange = { value ->
             when (value) {
                 // swipe right: toggle pin, then snap back
                 SwipeToDismissBoxValue.StartToEnd -> {
-                    db.setPinned(note.id, !note.isPinned)
-                    onChanged()
+                    onPin()
                     false
                 }
                 SwipeToDismissBoxValue.EndToStart -> {
-                    if (isTrash) {
-                        db.restoreFromTrash(note.id)
-                    } else {
-                        db.moveToTrash(note.id)
-                        onTrashed(note)
-                    }
-                    onChanged()
+                    onDismiss()
                     true
                 }
                 else -> false
@@ -673,7 +712,8 @@ fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
     val wasDirty by rememberUpdatedState(dirty)
     DisposableEffect(noteId) {
         onDispose { // flush what the debounce hasn't written yet
-            if (wasDirty) db.setContent(noteId, latest)
+            // ponytail: fire-and-forget scope — the write must outlive this composable
+            if (wasDirty) CoroutineScope(Dispatchers.IO).launch { db.setContent(noteId, latest) }
         }
     }
     if (!loaded) return
@@ -756,8 +796,10 @@ fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
             confirmButton = {
                 TextButton(onClick = {
                     confirmDelete = false
-                    db.deletePermanently(noteId)
-                    onBack()
+                    scope.launch {
+                        withContext(Dispatchers.IO) { db.deletePermanently(noteId) }
+                        onBack()
+                    }
                 }) { Text("Delete") }
             },
             dismissButton = {
@@ -784,8 +826,10 @@ fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
                 actions = {
                     if (trashed) {
                         IconButton(onClick = {
-                            db.restoreFromTrash(noteId)
-                            onBack()
+                            scope.launch {
+                                withContext(Dispatchers.IO) { db.restoreFromTrash(noteId) }
+                                onBack()
+                            }
                         }) {
                             Icon(Icons.Outlined.RestoreFromTrash, contentDescription = "Restore")
                         }
@@ -811,9 +855,10 @@ fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
                                 text = { Text(if (pinned) "Unpin" else "Pin") },
                                 leadingIcon = { Icon(Icons.Outlined.PushPin, contentDescription = null) },
                                 onClick = {
-                                    db.setPinned(noteId, !pinned)
-                                    pinned = !pinned
+                                    val next = !pinned
+                                    pinned = next
                                     menuOpen = false
+                                    scope.launch(Dispatchers.IO) { db.setPinned(noteId, next) }
                                 }
                             )
                             DropdownMenuItem(
@@ -821,8 +866,10 @@ fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
                                 leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
                                 onClick = {
                                     menuOpen = false
-                                    db.moveToTrash(noteId)
-                                    onBack()
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) { db.moveToTrash(noteId) }
+                                        onBack()
+                                    }
                                 }
                             )
                         }
