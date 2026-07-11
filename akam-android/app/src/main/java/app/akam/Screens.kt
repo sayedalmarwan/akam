@@ -399,7 +399,7 @@ private fun NotesContent(
                 }
             }
         )
-        Box(Modifier.weight(1f)) {
+        Box(Modifier.weight(1f).imePadding()) {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 8.dp, bottom = 100.dp)) {
                 sections.forEach { (label, group) ->
                     if (label.isNotEmpty()) item(key = "header-$label") { GroupLabel(label) }
@@ -476,7 +476,6 @@ private fun NotesContent(
                         modifier = Modifier
                             .align(Alignment.BottomStart)
                             .padding(start = 20.dp, bottom = 80.dp)
-                            .imePadding()
                     ) {
                         Text(
                             "${notes.size} ${if (notes.size == 1) "result" else "results"}",
@@ -511,7 +510,6 @@ private fun NotesContent(
                         .align(Alignment.BottomStart)
                         .fillMaxWidth()
                         .padding(start = 16.dp, end = 96.dp, bottom = 16.dp)
-                        .imePadding()
                 )
                 // M3 FAB: tonal primaryContainer, default rounded-square shape
                 FloatingActionButton(
@@ -519,7 +517,6 @@ private fun NotesContent(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(16.dp)
-                        .imePadding()
                 ) {
                     Icon(Icons.Outlined.Edit, contentDescription = "New note")
                 }
