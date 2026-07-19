@@ -69,4 +69,50 @@ class RichSpanTest {
         val out = toggleSpan(listOf(italic), "bold", 0, 5)
         assertEquals(setOf(italic, sp(0, 5)), out.toSet())
     }
+
+    // ---- list continuation on Enter ----
+
+    /** Enter after a non-empty bullet inserts the next bullet. */
+    @Test
+    fun enterContinuesBullet() {
+        // "• milk\n" with caret after the \n (pos 7)
+        val out = continueList("• milk\n", 7)
+        assertEquals("• milk\n• " to 9, out)
+    }
+
+    /** Enter on an empty bullet drops the marker and the newline (exit list). */
+    @Test
+    fun enterOnEmptyItemExitsList() {
+        // "• milk\n• \n" — caret after the trailing \n (pos 10); the "• " line is empty
+        val out = continueList("• milk\n• \n", 10)
+        assertEquals("• milk\n" to 7, out)
+    }
+
+    /** Numbered items increment; a checked box continues as unchecked. */
+    @Test
+    fun enterIncrementsNumberAndResetsCheckbox() {
+        assertEquals("1. a\n2. " to 8, continueList("1. a\n", 5))
+        assertEquals("☑ done\n☐ " to 9, continueList("☑ done\n", 7))
+    }
+
+    /** A plain line yields no continuation. */
+    @Test
+    fun enterOnPlainLineDoesNothing() {
+        assertEquals(null, continueList("hello\n", 6))
+    }
+
+    @Test
+    fun numberForFollowsPreviousNumberedLine() {
+        val text = "1. a\n2. b\n"
+        assertEquals(3, numberFor(text, text.length)) // next line after "2. b"
+        assertEquals(1, numberFor("plain\n", 6))       // no number above -> starts at 1
+    }
+
+    @Test
+    fun headingCyclesThroughLevelsAndBack() {
+        assertEquals("heading", nextHeading(null))
+        assertEquals("heading2", nextHeading("heading"))
+        assertEquals("heading3", nextHeading("heading2"))
+        assertEquals(null, nextHeading("heading3"))
+    }
 }

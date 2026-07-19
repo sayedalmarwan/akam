@@ -31,7 +31,10 @@ pub struct Tag {
 pub struct RichSpan {
     pub start: i32,
     pub end: i32,
-    pub style: String, // "bold" | "italic" | "underline" | "strike" | "heading"
+    // opaque to the core: "bold" | "italic" | "underline" | "strike" | "code" |
+    // "codeblock" | "heading"|"heading2"|"heading3" | "link:<url>". New styles need
+    // no schema change — the column is untyped JSON.
+    pub style: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -539,11 +542,13 @@ mod tests {
         let note = db.create_note().unwrap();
         assert_eq!(note.title, "");
 
-        let spans = vec![RichSpan {
-            start: 0,
-            end: 4,
-            style: "bold".into(),
-        }];
+        // styles are opaque strings: new kinds (code, heading3, packed link url)
+        // round-trip with no schema change
+        let spans = vec![
+            RichSpan { start: 0, end: 4, style: "bold".into() },
+            RichSpan { start: 5, end: 9, style: "heading3".into() },
+            RichSpan { start: 10, end: 14, style: "link:https://example.com".into() },
+        ];
         db.set_content(note.id, rich("Trip plan\nPack for #travel/asia", spans.clone()))
             .unwrap();
 

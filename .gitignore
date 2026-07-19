@@ -18,3 +18,7 @@ akam-android/app/src/main/jniLibs/
 
 # empty .git left by `cargo new`, parked to keep this a single repo
 akam-core/.git-unused-empty/
+
+# Local emulator screenshots used during manual UI checks
+/t*.png
+/g*.png

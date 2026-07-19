@@ -29,22 +29,30 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.FormatListBulleted
 import androidx.compose.material.icons.automirrored.outlined.LabelOff
 import androidx.compose.material.icons.automirrored.outlined.Undo
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.CheckBox
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.FormatBold
 import androidx.compose.material.icons.outlined.FormatItalic
+import androidx.compose.material.icons.outlined.FormatQuote
+import androidx.compose.material.icons.outlined.FormatStrikethrough
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.FormatListNumbered
 import androidx.compose.material.icons.outlined.FormatUnderlined
+import androidx.compose.material.icons.outlined.HorizontalRule
+import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Tag
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -88,12 +96,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -676,6 +689,14 @@ private fun lineStart(text: String, pos: Int) = text.lastIndexOf('\n', pos - 1) 
 private fun lineEnd(text: String, pos: Int) =
     text.indexOf('\n', pos).let { if (it < 0) text.length else it }
 
+/** True when [new] is exactly [old] with a single '\n' typed at the caret. */
+private fun isNewlineInsert(old: TextFieldValue, new: TextFieldValue): Boolean {
+    val c = new.selection.min
+    return new.selection.collapsed && new.text.length == old.text.length + 1 &&
+        c in 1..new.text.length && new.text[c - 1] == '\n' &&
+        new.text.removeRange(c - 1, c) == old.text
+}
+
 @Composable
 fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
     var loaded by remember { mutableStateOf(false) }
@@ -735,14 +756,39 @@ fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
         dirty = true
     }
 
-    fun toggleHeading() {
+    // heading is line-level: cycle none → H1 → H2 → H3 → none on the caret's line
+    fun cycleHeading() {
         val ls = lineStart(value.text, value.selection.min)
         val le = lineEnd(value.text, value.selection.min)
-        if (le > ls) {
-            pushUndo()
-            spans = toggleSpan(spans, RichStyles.HEADING, ls, le)
-            dirty = true
-        }
+        if (le <= ls) return
+        pushUndo()
+        val current = spans.firstOrNull { isHeading(it.style) && it.start < le && it.end > ls }?.style
+        val cleared = spans.filterNot { isHeading(it.style) && it.start < le && it.end > ls }
+        val next = nextHeading(current)
+        spans = if (next == null) cleared else cleared + RichSpan(ls, le, next)
+        dirty = true
+    }
+
+    // code block is line-level: monospace span over the selected line(s)
+    fun toggleCodeBlock() {
+        val ls = lineStart(value.text, value.selection.min)
+        val le = lineEnd(value.text, value.selection.max)
+        if (le <= ls) return
+        pushUndo()
+        val covered = spans.any { it.style == RichStyles.CODEBLOCK && it.start <= ls && it.end >= le }
+        spans = if (covered) spans.filterNot { it.style == RichStyles.CODEBLOCK && it.start < le && it.end > ls }
+        else spans + RichSpan(ls, le, RichStyles.CODEBLOCK)
+        dirty = true
+    }
+
+    fun addLink(url: String, sel: TextRange) {
+        if (sel.collapsed || url.isBlank()) return
+        pushUndo()
+        val u = if (url.contains("://")) url else "https://$url"
+        spans = spans.filterNot {
+            it.style.startsWith(RichStyles.LINK_PREFIX) && it.start < sel.max && it.end > sel.min
+        } + RichSpan(sel.min, sel.max, RichStyles.LINK_PREFIX + u)
+        dirty = true
     }
 
     fun editLinePrefix(at: Int = value.selection.min, transform: (String) -> String) {
@@ -782,8 +828,11 @@ fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
     }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     val scope = rememberCoroutineScope()
+    val uriHandler = LocalUriHandler.current
     var menuOpen by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var moreOpen by remember { mutableStateOf(false) }
+    var linkSel by remember { mutableStateOf<TextRange?>(null) } // selection awaiting a url
 
     if (confirmDelete) {
         AlertDialog(
@@ -898,16 +947,22 @@ fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
                     }
                 }
             }
+            val codeBg = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            val quoteBar = MaterialTheme.colorScheme.primary
             BasicTextField(
                 value = value,
                 readOnly = trashed,
                 onValueChange = { new ->
-                    if (new.text != value.text) {
+                    // pressing Enter on a list item continues/exits the list
+                    val cont = if (isNewlineInsert(value, new)) continueList(new.text, new.selection.min) else null
+                    val text = cont?.first ?: new.text
+                    val sel = cont?.let { TextRange(it.second) } ?: new.selection
+                    if (text != value.text) {
                         pushUndo()
-                        spans = remapSpans(spans, value.text, new.text)
+                        spans = remapSpans(spans, value.text, text)
                         dirty = true
                     }
-                    value = new
+                    value = TextFieldValue(text, sel)
                 },
                 onTextLayout = { layout = it },
                 textStyle = MaterialTheme.typography.bodyLarge.copy(
@@ -919,10 +974,28 @@ fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
                     .weight(1f)
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp, vertical = 8.dp)
-                    // quick taps on a ☐/☑ glyph toggle it; observed without consuming so
-                    // the field still handles cursor placement. Toggle is deferred past
-                    // the field's own tap processing — mutating mid-gesture gets clobbered
-                    // by the field's stale cursor update.
+                    // full-width block visuals spans can't draw: code-block tint and
+                    // the quote accent bar, positioned from the text's own layout
+                    .drawBehind {
+                        val l = layout ?: return@drawBehind
+                        fun lineTop(off: Int) = l.getLineTop(l.getLineForOffset(off.coerceIn(0, value.text.length)))
+                        fun lineBottom(off: Int) = l.getLineBottom(l.getLineForOffset(off.coerceIn(0, value.text.length)))
+                        for (sp in spans) if (sp.style == RichStyles.CODEBLOCK) {
+                            val top = lineTop(sp.start)
+                            drawRoundRect(
+                                codeBg, Offset(0f, top), Size(size.width, lineBottom(sp.end) - top),
+                                CornerRadius(12f, 12f)
+                            )
+                        }
+                        for (r in quoteLineRanges(value.text)) {
+                            val top = lineTop(r.first)
+                            drawRect(quoteBar, Offset(0f, top), Size(4.dp.toPx(), lineBottom(r.last) - top))
+                        }
+                    }
+                    // quick taps on a ☐/☑ glyph toggle it, and taps inside a link span
+                    // open the url; observed without consuming so the field still handles
+                    // cursor placement. Toggle is deferred past the field's own tap
+                    // processing — mutating mid-gesture gets clobbered by its stale cursor.
                     .pointerInput(trashed) {
                         if (trashed) return@pointerInput
                         awaitEachGesture {
@@ -933,6 +1006,13 @@ fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
                             val l = layout ?: return@awaitEachGesture
                             val off = l.getOffsetForPosition(up.position)
                             val text = value.text
+                            val link = spans.firstOrNull {
+                                it.style.startsWith(RichStyles.LINK_PREFIX) && off >= it.start && off < it.end
+                            }
+                            if (link != null) {
+                                uriHandler.openUri(link.style.removePrefix(RichStyles.LINK_PREFIX))
+                                return@awaitEachGesture
+                            }
                             val ls = lineStart(text, off.coerceIn(0, text.length))
                             if ((text.startsWith("☐ ", ls) || text.startsWith("☑ ", ls)) &&
                                 off <= ls + 1
@@ -947,69 +1027,156 @@ fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
                     .padding(bottom = 64.dp)
             )
         }
-        // formatting toolbar: B I U H1 bullets checkbox #Tag (hidden in trash)
-        if (!trashed) Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .imePadding()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
-        ) {
-            Row(
-                Modifier
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
+        // formatting toolbar (hidden in trash). Primary row is always visible;
+        // the "+" reveals a secondary row of the less-common block/link controls.
+        if (!trashed) {
+            val caretLs = lineStart(value.text, value.selection.min)
+            val caretLe = lineEnd(value.text, value.selection.min)
+            val hLabel = when (spans.firstOrNull {
+                isHeading(it.style) && it.start < caretLe && it.end > caretLs
+            }?.style) {
+                RichStyles.H2 -> "H2"
+                RichStyles.H3 -> "H3"
+                else -> "H1"
+            }
+            Surface(
+                shape = RoundedCornerShape(28.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .imePadding()
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
             ) {
-                IconButton(onClick = { toggleStyle(RichStyles.BOLD) }) {
-                    Icon(Icons.Outlined.FormatBold, contentDescription = "Bold")
-                }
-                IconButton(onClick = { toggleStyle(RichStyles.ITALIC) }) {
-                    Icon(Icons.Outlined.FormatItalic, contentDescription = "Italic")
-                }
-                IconButton(onClick = { toggleStyle(RichStyles.UNDERLINE) }) {
-                    Icon(Icons.Outlined.FormatUnderlined, contentDescription = "Underline")
-                }
-                IconButton(onClick = { toggleHeading() }) {
-                    Text("H1", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                }
-                IconButton(onClick = {
-                    editLinePrefix { l -> if (l.startsWith("• ")) l.removePrefix("• ") else "• $l" }
-                }) {
-                    Icon(Icons.AutoMirrored.Outlined.FormatListBulleted, contentDescription = "Bullet list")
-                }
-                IconButton(onClick = {
-                    editLinePrefix { l ->
-                        when {
-                            l.startsWith("☑ ") -> l.removePrefix("☑ ")
-                            l.startsWith("☐ ") -> "☑ " + l.removePrefix("☐ ")
-                            else -> "☐ $l"
+                Column {
+                    if (moreOpen) {
+                        Row(
+                            Modifier
+                                .horizontalScroll(rememberScrollState())
+                                .padding(horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IconButton(onClick = { toggleStyle(RichStyles.CODE) }) {
+                                Icon(Icons.Outlined.Code, contentDescription = "Inline code")
+                            }
+                            IconButton(onClick = { toggleCodeBlock() }) {
+                                Icon(Icons.Outlined.Terminal, contentDescription = "Code block")
+                            }
+                            IconButton(onClick = {
+                                editLinePrefix { l -> if (l.startsWith("> ")) l.removePrefix("> ") else "> $l" }
+                            }) {
+                                Icon(Icons.Outlined.FormatQuote, contentDescription = "Quote")
+                            }
+                            IconButton(onClick = { insertAtCursor("\n────────────\n") }) {
+                                Icon(Icons.Outlined.HorizontalRule, contentDescription = "Separator")
+                            }
+                            IconButton(onClick = { value.selection.takeIf { !it.collapsed }?.let { linkSel = it } }) {
+                                Icon(Icons.Outlined.Link, contentDescription = "Link")
+                            }
+                        }
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                            modifier = Modifier.padding(horizontal = 12.dp)
+                        )
+                    }
+                    Row(
+                        Modifier
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(onClick = { toggleStyle(RichStyles.BOLD) }) {
+                            Icon(Icons.Outlined.FormatBold, contentDescription = "Bold")
+                        }
+                        IconButton(onClick = { toggleStyle(RichStyles.ITALIC) }) {
+                            Icon(Icons.Outlined.FormatItalic, contentDescription = "Italic")
+                        }
+                        IconButton(onClick = { toggleStyle(RichStyles.UNDERLINE) }) {
+                            Icon(Icons.Outlined.FormatUnderlined, contentDescription = "Underline")
+                        }
+                        IconButton(onClick = { toggleStyle(RichStyles.STRIKE) }) {
+                            Icon(Icons.Outlined.FormatStrikethrough, contentDescription = "Strikethrough")
+                        }
+                        IconButton(onClick = { cycleHeading() }) {
+                            Text(hLabel, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        }
+                        IconButton(onClick = {
+                            editLinePrefix { l -> if (l.startsWith("• ")) l.removePrefix("• ") else "• $l" }
+                        }) {
+                            Icon(Icons.AutoMirrored.Outlined.FormatListBulleted, contentDescription = "Bullet list")
+                        }
+                        IconButton(onClick = {
+                            editLinePrefix { l ->
+                                if (NUM_RE.containsMatchIn(l)) l.replaceFirst(NUM_RE, "")
+                                else "${numberFor(value.text, lineStart(value.text, value.selection.min))}. $l"
+                            }
+                        }) {
+                            Icon(Icons.Outlined.FormatListNumbered, contentDescription = "Numbered list")
+                        }
+                        IconButton(onClick = {
+                            editLinePrefix { l ->
+                                when {
+                                    l.startsWith("☑ ") -> l.removePrefix("☑ ")
+                                    l.startsWith("☐ ") -> "☑ " + l.removePrefix("☐ ")
+                                    else -> "☐ $l"
+                                }
+                            }
+                        }) {
+                            Icon(Icons.Outlined.CheckBox, contentDescription = "Checkbox")
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clickable { insertAtCursor("#") }
+                                .padding(horizontal = 10.dp, vertical = 8.dp)
+                        ) {
+                            Icon(
+                                Icons.Outlined.Tag,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.size(4.dp))
+                            Text(
+                                "Tag",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(onClick = { moreOpen = !moreOpen }) {
+                            Icon(
+                                Icons.Outlined.Add,
+                                contentDescription = if (moreOpen) "Fewer options" else "More options",
+                                modifier = Modifier.rotate(if (moreOpen) 45f else 0f)
+                            )
                         }
                     }
-                }) {
-                    Icon(Icons.Outlined.CheckBox, contentDescription = "Checkbox")
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .clickable { insertAtCursor("#") }
-                        .padding(horizontal = 10.dp, vertical = 8.dp)
-                ) {
-                    Icon(
-                        Icons.Outlined.Tag,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.size(4.dp))
-                    Text(
-                        "Tag",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
             }
         }
+    }
+
+    linkSel?.let { sel ->
+        var url by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { linkSel = null },
+            title = { Text("Add link") },
+            text = {
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    singleLine = true,
+                    placeholder = { Text("https://") }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    addLink(url, sel)
+                    linkSel = null
+                }) { Text("Add") }
+            },
+            dismissButton = {
+                TextButton(onClick = { linkSel = null }) { Text("Cancel") }
+            }
+        )
     }
 }

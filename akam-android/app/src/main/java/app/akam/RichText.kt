@@ -6,6 +6,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.OffsetMapping
@@ -20,7 +21,81 @@ object RichStyles {
     const val ITALIC = "italic"
     const val UNDERLINE = "underline"
     const val STRIKE = "strike"
-    const val HEADING = "heading"
+    const val CODE = "code"           // inline monospace
+    const val CODEBLOCK = "codeblock" // full-line monospace block
+    // heading levels; "heading" stays H1 so notes saved before H2/H3 still render
+    const val H1 = "heading"
+    const val H2 = "heading2"
+    const val H3 = "heading3"
+    // a link span packs its url after the prefix: "link:https://example.com"
+    const val LINK_PREFIX = "link:"
+}
+
+private val HEADINGS = listOf(RichStyles.H1, RichStyles.H2, RichStyles.H3)
+fun isHeading(style: String) = style in HEADINGS
+
+/** Heading cycle: none → H1 → H2 → H3 → none. */
+fun nextHeading(current: String?): String? = when (current) {
+    null -> RichStyles.H1
+    RichStyles.H3 -> null
+    else -> HEADINGS[HEADINGS.indexOf(current) + 1]
+}
+
+// list markers stored as literal line prefixes, like bullets/checkboxes
+internal val NUM_RE = Regex("""^\d+\. """)
+
+/** The list marker a line begins with (bullet / checkbox / number), or null. */
+fun listMarker(line: String): String? = when {
+    line.startsWith("• ") -> "• "
+    line.startsWith("☐ ") -> "☐ "
+    line.startsWith("☑ ") -> "☑ "
+    else -> NUM_RE.find(line)?.value
+}
+
+/** Marker the next item gets: numbers increment, a checked box resets to empty. */
+private fun nextMarker(marker: String): String = when (marker) {
+    "☑ " -> "☐ "
+    else -> marker.removeSuffix(". ").toIntOrNull()?.let { "${it + 1}. " } ?: marker
+}
+
+/** The number a fresh "N. " line takes, from the numbered line directly above it. */
+fun numberFor(text: String, lineStart: Int): Int {
+    if (lineStart == 0) return 1
+    val prevStart = text.lastIndexOf('\n', lineStart - 2) + 1
+    val prevLine = text.substring(prevStart, lineStart - 1)
+    return (NUM_RE.find(prevLine)?.value?.removeSuffix(". ")?.toIntOrNull() ?: 0) + 1
+}
+
+/**
+ * A newline was just inserted at [cursor] (so text[cursor-1] == '\n'). If the
+ * line it split is a list item, continue the list with the next marker — or, when
+ * that item was empty, exit the list (drop the marker and the newline). Returns
+ * the new (text, cursor), or null to keep the newline exactly as typed.
+ *
+ * ponytail: increments from the previous line, correct for append-typing; a
+ * deleted middle item doesn't renumber the rest. Add a renumber pass if it bites.
+ */
+fun continueList(text: String, cursor: Int): Pair<String, Int>? {
+    val nl = cursor - 1
+    if (nl < 0 || text.getOrNull(nl) != '\n') return null
+    val lineStart = text.lastIndexOf('\n', nl - 1) + 1
+    val prevLine = text.substring(lineStart, nl)
+    val marker = listMarker(prevLine) ?: return null
+    return if (prevLine.length == marker.length) {
+        text.removeRange(lineStart, cursor) to lineStart // empty item: exit the list
+    } else {
+        val nm = nextMarker(marker)
+        (text.substring(0, cursor) + nm + text.substring(cursor)) to (cursor + nm.length)
+    }
+}
+
+/** Char ranges [start, end] of each line beginning with "> ", for the quote bar. */
+fun quoteLineRanges(text: String): List<IntRange> = buildList {
+    var offset = 0
+    for (line in text.split("\n")) {
+        if (line.startsWith("> ")) add(offset..(offset + line.length))
+        offset += line.length + 1
+    }
 }
 
 /**
@@ -109,8 +184,15 @@ internal fun richAnnotated(text: String, spans: List<RichSpan>, cs: ColorScheme)
             RichStyles.ITALIC -> SpanStyle(fontStyle = FontStyle.Italic)
             RichStyles.UNDERLINE -> SpanStyle(textDecoration = TextDecoration.Underline)
             RichStyles.STRIKE -> SpanStyle(textDecoration = TextDecoration.LineThrough)
-            RichStyles.HEADING -> SpanStyle(fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-            else -> continue
+            RichStyles.CODE -> SpanStyle(fontFamily = FontFamily.Monospace, background = cs.surfaceVariant)
+            // codeblock: monospace here; the full-width tint is drawn behind the field
+            RichStyles.CODEBLOCK -> SpanStyle(fontFamily = FontFamily.Monospace)
+            RichStyles.H1 -> SpanStyle(fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            RichStyles.H2 -> SpanStyle(fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+            RichStyles.H3 -> SpanStyle(fontSize = 17.sp, fontWeight = FontWeight.Medium)
+            else -> if (sp.style.startsWith(RichStyles.LINK_PREFIX))
+                SpanStyle(color = cs.primary, textDecoration = TextDecoration.Underline)
+            else continue
         }
         builder.addStyle(style, s, e)
     }
@@ -133,6 +215,12 @@ internal fun richAnnotated(text: String, spans: List<RichSpan>, cs: ColorScheme)
             }
             line.startsWith("☐ ") || line.startsWith("• ") ->
                 style(SpanStyle(color = cs.primary), 0, 1)
+            // quote line: muted italic; the accent bar is drawn behind the field
+            line.startsWith("> ") ->
+                style(SpanStyle(color = cs.onSurfaceVariant, fontStyle = FontStyle.Italic), 0, line.length)
+            else -> NUM_RE.find(line)?.let {
+                style(SpanStyle(color = cs.primary, fontWeight = FontWeight.Medium), 0, it.value.length)
+            }
         }
         // chip-style hashtags: tonal secondaryContainer highlight
         for (m in TAG_RE.findAll(line)) {
