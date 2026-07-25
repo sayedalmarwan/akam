@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "akam-core",
+    "akam-windows/src-tauri",
+]
+resolver = "2"

@@ -1,0 +1,25 @@
+[package]
+name = "akam-windows"
+version = "0.1.0"
+description = "Akam Notes Windows Application"
+authors = ["marwan"]
+edition = "2021"
+
+[lib]
+name = "akam_windows_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0.5", features = [] }
+
+[dependencies]
+akam-core = { path = "../../akam-core" }
+tauri = { version = "2.1.1", features = ["tray-icon", "protocol-asset"] }
+tauri-plugin-opener = "2.0.0"
+window-vibrancy = "0.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+rfd = "0.15"
+
