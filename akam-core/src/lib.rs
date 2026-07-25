@@ -14,6 +14,7 @@ pub struct Note {
     pub is_deleted: bool,
     pub is_pinned: bool,
     pub trashed_at: Option<i64>,
+    pub thumbnail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +71,23 @@ impl From<serde_json::Error> for AkamError {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteStats {
+    pub word_count: i32,
+    pub char_count: i32,
+    pub line_count: i32,
+    pub reading_time_minutes: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteRevision {
+    pub id: i64,
+    pub note_id: i64,
+    pub title: String,
+    pub body: String,
+    pub created_at: i64,
+}
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS notes (
     id INTEGER PRIMARY KEY,
@@ -93,6 +111,29 @@ CREATE TABLE IF NOT EXISTS note_tags (
     note_id INTEGER NOT NULL REFERENCES notes(id),
     tag_id INTEGER NOT NULL REFERENCES tags(id),
     PRIMARY KEY (note_id, tag_id)
+);
+
+CREATE TABLE IF NOT EXISTS note_links (
+    source_id INTEGER NOT NULL REFERENCES notes(id),
+    target_title TEXT NOT NULL,
+    PRIMARY KEY (source_id, target_title)
+);
+
+CREATE TABLE IF NOT EXISTS attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id INTEGER NOT NULL REFERENCES notes(id),
+    filename TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS note_revisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id INTEGER NOT NULL REFERENCES notes(id),
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at INTEGER NOT NULL
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
@@ -153,9 +194,15 @@ fn purge_old_trash(conn: &Connection, now: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
-const NOTE_COLS: &str = "id, title, body, created_at, updated_at, is_deleted, is_pinned, trashed_at";
+const NOTE_COLS: &str = "id, title, body, created_at, updated_at, is_deleted, is_pinned, trashed_at, spans";
 
 fn row_to_note(row: &rusqlite::Row) -> rusqlite::Result<Note> {
+    let spans_json: String = row.get(8)?;
+    let spans: Vec<RichSpan> = serde_json::from_str(&spans_json).unwrap_or_default();
+    let thumbnail = spans
+        .iter()
+        .find(|s| s.style.starts_with("image:"))
+        .and_then(|s| s.style.strip_prefix("image:").map(|p| p.to_string()));
     Ok(Note {
         id: row.get(0)?,
         title: row.get(1)?,
@@ -165,6 +212,7 @@ fn row_to_note(row: &rusqlite::Row) -> rusqlite::Result<Note> {
         is_deleted: row.get(5)?,
         is_pinned: row.get(6)?,
         trashed_at: row.get(7)?,
+        thumbnail,
     })
 }
 
@@ -230,6 +278,36 @@ fn ensure_tag(conn: &Connection, path: &str) -> rusqlite::Result<i64> {
     Ok(parent.expect("empty tag path"))
 }
 
+fn extract_wiki_links(text: &str) -> Vec<String> {
+    let mut links = std::collections::BTreeSet::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("[[") {
+        let after_start = &rest[start + 2..];
+        if let Some(end) = after_start.find("]]") {
+            let target = &after_start[..end];
+            let title = target.split('|').next().unwrap_or(target).trim();
+            if !title.is_empty() {
+                links.insert(title.to_string());
+            }
+            rest = &after_start[end + 2..];
+        } else {
+            break;
+        }
+    }
+    links.into_iter().collect()
+}
+
+fn sync_note_links(conn: &Connection, note_id: i64, text: &str) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM note_links WHERE source_id = ?1", [note_id])?;
+    for target in extract_wiki_links(text) {
+        conn.execute(
+            "INSERT OR IGNORE INTO note_links (source_id, target_title) VALUES (?1, ?2)",
+            (note_id, &target),
+        )?;
+    }
+    Ok(())
+}
+
 fn sync_note_tags(conn: &Connection, note_id: i64, text: &str) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM note_tags WHERE note_id = ?1", [note_id])?;
     for tag in extract_tags(text) {
@@ -289,6 +367,7 @@ impl AkamDb {
             is_deleted: false,
             is_pinned: false,
             trashed_at: None,
+            thumbnail: None,
         })
     }
 
@@ -331,12 +410,32 @@ impl AkamDb {
         let title = content.text.lines().next().unwrap_or("").trim().to_string();
         let spans_json = serde_json::to_string(&content.spans)?;
         let mut conn = self.conn.lock().unwrap();
+
+        // Check if revision snapshot should be recorded (if text is non-empty and last revision > 5 min old)
+        if !content.text.trim().is_empty() {
+            let last_rev_time: Option<i64> = conn
+                .query_row(
+                    "SELECT created_at FROM note_revisions WHERE note_id = ?1 ORDER BY created_at DESC LIMIT 1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .ok();
+            let now = now_ms();
+            if last_rev_time.map_or(true, |t| now - t > 300_000) {
+                let _ = conn.execute(
+                    "INSERT INTO note_revisions (note_id, title, body, created_at) VALUES (?1, ?2, ?3, ?4)",
+                    (id, &title, &content.text, now),
+                );
+            }
+        }
+
         let tx = conn.transaction()?;
         tx.execute(
             "UPDATE notes SET title = ?1, body = ?2, spans = ?3, updated_at = ?4 WHERE id = ?5",
             (&title, &content.text, &spans_json, now_ms(), id),
         )?;
         sync_note_tags(&tx, id, &content.text)?;
+        sync_note_links(&tx, id, &content.text)?;
         tx.commit()?;
         Ok(())
     }
@@ -381,7 +480,10 @@ impl AkamDb {
     pub fn delete_permanently(&self, id: i64) -> Result<(), AkamError> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        tx.execute("DELETE FROM note_tags WHERE note_id = ?1", [id])?; // no-op unless still live
+        tx.execute("DELETE FROM note_tags WHERE note_id = ?1", [id])?;
+        tx.execute("DELETE FROM note_links WHERE source_id = ?1", [id])?;
+        tx.execute("DELETE FROM attachments WHERE note_id = ?1", [id])?;
+        tx.execute("DELETE FROM note_revisions WHERE note_id = ?1", [id])?;
         tx.execute("DELETE FROM notes WHERE id = ?1", [id])?; // FTS trigger cleans the index
         prune_orphan_tags(&tx)?;
         tx.commit()?;
@@ -450,7 +552,7 @@ impl AkamDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT n.id, n.title, n.body, n.created_at, n.updated_at, n.is_deleted,
-                    n.is_pinned, n.trashed_at
+                    n.is_pinned, n.trashed_at, n.spans
              FROM notes_fts f JOIN notes n ON n.id = f.rowid
              WHERE notes_fts MATCH ?1 AND n.is_deleted = 0 ORDER BY rank",
         )?;
@@ -482,6 +584,142 @@ impl AkamDb {
             })?
             .collect::<Result<_, _>>()?;
         Ok(tags)
+    }
+
+    /// Return notes that reference the given note via `[[Target Title]]` wiki-links.
+    pub fn get_backlinks(&self, note_id: i64) -> Result<Vec<Note>, AkamError> {
+        let conn = self.conn.lock().unwrap();
+        let target_title: Option<String> = conn
+            .query_row("SELECT title FROM notes WHERE id = ?1", [note_id], |r| r.get(0))
+            .map(Some)
+            .or_else(|e| {
+                if e == rusqlite::Error::QueryReturnedNoRows {
+                    Ok(None)
+                } else {
+                    Err(e)
+                }
+            })?;
+        let title = match target_title {
+            Some(t) if !t.trim().is_empty() => t,
+            _ => return Ok(Vec::new()),
+        };
+
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {NOTE_COLS} FROM notes n
+             JOIN note_links nl ON nl.source_id = n.id
+             WHERE nl.target_title = ?1 AND n.is_deleted = 0
+             ORDER BY n.updated_at DESC"
+        ))?;
+        let notes = stmt.query_map([title], row_to_note)?.collect::<Result<_, _>>()?;
+        Ok(notes)
+    }
+
+    /// Return word count, character count, line count, and estimated reading time.
+    pub fn get_note_stats(&self, note_id: i64) -> Result<Option<NoteStats>, AkamError> {
+        let conn = self.conn.lock().unwrap();
+        let text: Option<String> = conn
+            .query_row("SELECT body FROM notes WHERE id = ?1", [note_id], |r| r.get(0))
+            .map(Some)
+            .or_else(|e| {
+                if e == rusqlite::Error::QueryReturnedNoRows {
+                    Ok(None)
+                } else {
+                    Err(e)
+                }
+            })?;
+        let body = match text {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+
+        let word_count = body.split_whitespace().count() as i32;
+        let char_count = body.chars().count() as i32;
+        let line_count = body.lines().count() as i32;
+        let reading_time_minutes = (word_count as f32 / 200.0).ceil() as i32;
+
+        Ok(Some(NoteStats {
+            word_count,
+            char_count,
+            line_count,
+            reading_time_minutes: if reading_time_minutes < 1 && word_count > 0 { 1 } else { reading_time_minutes },
+        }))
+    }
+
+    /// Export note to formatted Markdown string.
+    pub fn export_note_to_markdown(&self, note_id: i64) -> Result<Option<String>, AkamError> {
+        let conn = self.conn.lock().unwrap();
+        let row: Option<(String, String)> = conn
+            .query_row("SELECT title, body FROM notes WHERE id = ?1", [note_id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .map(Some)
+            .or_else(|e| {
+                if e == rusqlite::Error::QueryReturnedNoRows {
+                    Ok(None)
+                } else {
+                    Err(e)
+                }
+            })?;
+        Ok(row.map(|(title, body)| {
+            if body.trim().starts_with(&format!("# {}", title.trim())) {
+                body
+            } else {
+                format!("# {}\n\n{}", title.trim(), body)
+            }
+        }))
+    }
+
+    /// List revision history for a note, newest first.
+    pub fn get_note_revisions(&self, note_id: i64) -> Result<Vec<NoteRevision>, AkamError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, note_id, title, body, created_at
+             FROM note_revisions WHERE note_id = ?1
+             ORDER BY created_at DESC"
+        )?;
+        let revs = stmt
+            .query_map([note_id], |row| {
+                Ok(NoteRevision {
+                    id: row.get(0)?,
+                    note_id: row.get(1)?,
+                    title: row.get(2)?,
+                    body: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(revs)
+    }
+
+    /// Restore note content to a previous revision.
+    pub fn restore_note_revision(&self, revision_id: i64) -> Result<(), AkamError> {
+        let mut conn = self.conn.lock().unwrap();
+        let rev: Option<(i64, String, String)> = conn
+            .query_row(
+                "SELECT note_id, title, body FROM note_revisions WHERE id = ?1",
+                [revision_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map(Some)
+            .or_else(|e| {
+                if e == rusqlite::Error::QueryReturnedNoRows {
+                    Ok(None)
+                } else {
+                    Err(e)
+                }
+            })?;
+
+        if let Some((note_id, title, body)) = rev {
+            let tx = conn.transaction()?;
+            tx.execute(
+                "UPDATE notes SET title = ?1, body = ?2, updated_at = ?3 WHERE id = ?4",
+                (&title, &body, now_ms(), note_id),
+            )?;
+            sync_note_tags(&tx, note_id, &body)?;
+            sync_note_links(&tx, note_id, &body)?;
+            tx.commit()?;
+        }
+        Ok(())
     }
 }
 

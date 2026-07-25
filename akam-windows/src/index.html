@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Akam</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- ── ANCHORED TOP-RIGHT WINDOW CONTROLS (ALWAYS VISIBLE & FUNCTIONAL) ──── -->
+  <div class="window-controls-container">
+    <button id="btn-minimize" class="window-btn" title="Minimize">&#xE921;</button>
+    <button id="btn-maximize" class="window-btn" title="Maximize">&#xE922;</button>
+    <button id="btn-close" class="window-btn close-btn" title="Close">&#xE8BB;</button>
+  </div>
+
+  <!-- ── MAIN 3-PANEL LAYOUT (Seamless CSD Header) ───────────────────────── -->
+  <div class="app-container">
+    <!-- PANEL 1: SIDEBAR -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header" data-tauri-drag-region>
+        <img src="assets/logo.png" alt="Akam Logo" style="width: 24px; height: 24px; object-fit: contain; margin-right: 8px;">
+        <span class="logo-text" data-tauri-drag-region>Akam</span>
+      </div>
+
+      <nav class="nav-section">
+        <div class="nav-item active" data-filter="all">
+          <span class="nav-icon blue">📝</span>
+          <span class="nav-label">All Notes</span>
+        </div>
+        <div class="nav-item" data-filter="pinned">
+          <span class="nav-icon amber">📌</span>
+          <span class="nav-label">Pinned</span>
+        </div>
+        <div class="nav-item" data-filter="untagged">
+          <span class="nav-icon green">🏷️</span>
+          <span class="nav-label">Untagged</span>
+        </div>
+        <div class="nav-item" data-filter="todo">
+          <span class="nav-icon cyan">☑️</span>
+          <span class="nav-label">Todo</span>
+        </div>
+        <div class="nav-item" data-filter="trash">
+          <span class="nav-icon red">🗑️</span>
+          <span class="nav-label">Trash</span>
+        </div>
+        <div id="nav-settings" class="nav-item">
+          <span class="nav-icon">⚙️</span>
+          <span class="nav-label">Settings</span>
+        </div>
+      </nav>
+
+      <div class="sidebar-divider"></div>
+
+      <div class="tags-header">TAGS</div>
+      <div id="tags-list" class="tags-list"></div>
+
+      <button id="btn-new-note" class="btn-new-note" title="New Note (Ctrl+N)">
+        <span class="plus-icon">+</span>
+        <span class="btn-label">New Note</span>
+        <span class="shortcut">Ctrl+N</span>
+      </button>
+    </aside>
+
+    <!-- PANEL 2: NOTE LIST -->
+    <section class="note-list-panel">
+      <div class="panel-header" data-tauri-drag-region>
+        <h2 id="list-title" data-tauri-drag-region>All Notes</h2>
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="search-input" placeholder="Search notes... (Ctrl+F)">
+        </div>
+      </div>
+      <div id="notes-list" class="notes-list"></div>
+    </section>
+
+    <!-- PANEL 3: WYSIWYG EDITOR & TOP INTEGRATED TOOLBAR -->
+    <main class="editor-panel">
+      <!-- Integrated Top Drag Bar with Formatting Toolbar -->
+      <div id="editor-toolbar" class="editor-toolbar" data-tauri-drag-region>
+        <div class="tb-left">
+          <button id="tb-back" class="tb-btn tb-back-btn hidden" title="Back to Notes">← Notes</button>
+          <span id="tb-back-sep" class="tb-sep hidden"></span>
+          <button id="tb-bold" class="tb-btn" title="Bold (Ctrl+B)"><b>B</b></button>
+          <button id="tb-italic" class="tb-btn" title="Italic (Ctrl+I)"><i>I</i></button>
+          <button id="tb-underline" class="tb-btn" title="Underline (Ctrl+U)"><u>U</u></button>
+          <button id="tb-strike" class="tb-btn" title="Strikethrough"><s>S</s></button>
+          <span class="tb-sep"></span>
+          <button id="tb-h1" class="tb-btn" title="Heading 1">H1</button>
+          <button id="tb-h2" class="tb-btn" title="Heading 2">H2</button>
+          <button id="tb-h3" class="tb-btn" title="Heading 3">H3</button>
+          <span class="tb-sep"></span>
+          <button id="tb-checkbox" class="tb-btn" title="Insert Checkbox">☑</button>
+          <button id="tb-bullet" class="tb-btn" title="Bullet List">•</button>
+          <button id="tb-numlist" class="tb-btn" title="Numbered List">1.</button>
+          <span class="tb-sep"></span>
+          <button id="tb-code" class="tb-btn tb-code-btn" title="Inline Code">&lt;&gt;</button>
+          <button id="tb-codeblock" class="tb-btn tb-code-btn" title="Code Block">```</button>
+          <span class="tb-sep"></span>
+          <button id="tb-image" class="tb-btn" title="Insert Image (📷)">📷</button>
+          <span class="tb-sep"></span>
+          <button id="tb-undo" class="tb-btn" title="Undo (Ctrl+Z)">↩ Undo</button>
+        </div>
+
+        <div class="tb-right">
+          <button id="btn-info" class="tb-btn" title="Note Statistics &amp; Dates">⋮ Info</button>
+        </div>
+      </div>
+
+      <!-- Tag Chips Container -->
+      <div id="tag-chips" class="tag-chips"></div>
+
+      <!-- WYSIWYG Rich Text Editor -->
+      <div id="editor" class="wysiwyg-editor" contenteditable="true" placeholder="Start typing your note here..."></div>
+
+      <!-- Empty State View (When no note selected) -->
+      <div id="editor-empty-state" class="editor-empty-state">
+        <div class="empty-icon">📝</div>
+        <h3>No Note Selected</h3>
+        <p>Select a note from the list or click <strong>+ New Note</strong> to start writing.</p>
+      </div>
+    </main>
+  </div>
+
+  <!-- ── NOTE INFO MODAL ──────────────────────────────────────────────────── -->
+  <div id="info-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Note Info</h3>
+        <button id="modal-close" class="modal-close-btn">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="stat-group">
+          <span class="stat-label">WORDS</span>
+          <span id="stat-words" class="stat-value">0 words</span>
+        </div>
+        <div class="stat-group">
+          <span class="stat-label">CHARACTERS</span>
+          <span id="stat-chars" class="stat-value">0 characters</span>
+        </div>
+        <div class="stat-group">
+          <span class="stat-label">CREATED</span>
+          <span id="stat-created" class="stat-value">-</span>
+        </div>
+        <div class="stat-group">
+          <span class="stat-label">MODIFIED</span>
+          <span id="stat-modified" class="stat-value">-</span>
+        </div>
+        <div class="stat-group" style="margin-top: 16px;">
+          <span class="stat-label">REVISION HISTORY</span>
+          <div id="revision-list" class="revision-list" style="max-height: 120px; overflow-y: auto; font-size: 13px; margin-top: 6px;"></div>
+        </div>
+        <div class="modal-actions" style="margin-top: 16px; display: flex; justify-content: flex-end; gap: 8px;">
+          <button id="btn-export-pdf" class="tb-btn" style="padding: 6px 12px; font-weight: 500;">📄 Export PDF</button>
+          <button id="btn-export-md" class="tb-btn" style="padding: 6px 12px; font-weight: 500;">📥 Export Markdown</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SETTINGS MODAL ────────────────────────────────────────────────── -->
+  <div id="settings-modal" class="modal-overlay hidden">
+    <div class="modal-card" style="width: 380px;">
+      <div class="modal-header">
+        <h3>⚙️ Settings & Cloud Sync</h3>
+        <button id="settings-modal-close" class="modal-close-btn">✕</button>
+      </div>
+      <div class="modal-body" style="display: flex; flex-direction: column; gap: 14px;">
+        <div style="background: rgba(0, 103, 192, 0.1); border: 1px solid rgba(0, 103, 192, 0.2); border-radius: 6px; padding: 12px;">
+          <div style="font-weight: 600; font-size: 13px; color: var(--accent);">🔐 Supabase Sync Engine</div>
+          <div style="font-size: 11px; color: var(--text-dim); margin-top: 2px;">jklezsokvxfcjcxjfnmj.supabase.co</div>
+        </div>
+        <div id="settings-auth-container">
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <input type="email" id="settings-email" placeholder="Email address" style="background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-main); padding: 8px 12px; border-radius: 6px; font-size: 13px;">
+            <input type="password" id="settings-password" placeholder="Password" style="background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-main); padding: 8px 12px; border-radius: 6px; font-size: 13px;">
+            <div style="display: flex; gap: 8px; margin-top: 4px;">
+              <button id="btn-settings-login" class="tb-btn tb-back-btn" style="flex: 1; padding: 7px;">Log In</button>
+              <button id="btn-settings-signup" class="tb-btn" style="flex: 1; padding: 7px;">Sign Up</button>
+            </div>
+          </div>
+        </div>
+        <div id="settings-status-box" style="font-size: 12px; color: var(--text-muted); font-weight: 500;">
+          Status: Offline Mode (Local SQLite)
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── WINDOWS 11 FLUENT NOTE CONTEXT MENU ────────────────────────────── -->
+  <div id="context-menu" class="context-menu hidden">
+    <div class="cm-item" id="cm-pin">
+      <span>📌 Toggle Pin</span>
+      <span class="cm-shortcut">Ctrl+Shift+P</span>
+    </div>
+    <div class="cm-divider" id="cm-div"></div>
+    <div class="cm-item danger" id="cm-trash">
+      <span>🗑️ Move to Trash</span>
+      <span class="cm-shortcut">Ctrl+Shift+D</span>
+    </div>
+    <div class="cm-item hidden" id="cm-restore">
+      <span>↩ Restore Note</span>
+    </div>
+    <div class="cm-item danger hidden" id="cm-delete">
+      <span>✖ Delete Permanently</span>
+    </div>
+  </div>
+
+  <!-- ── WINDOWS 11 FLUENT SIDEBAR CONTEXT MENU ──────────────────────────── -->
+  <div id="sidebar-context-menu" class="context-menu hidden">
+    <div class="cm-item" id="scm-open">
+      <span>📝 Open Tab View</span>
+    </div>
+    <div class="cm-divider"></div>
+    <div class="cm-item" id="scm-refresh">
+      <span>🔄 Refresh List</span>
+    </div>
+  </div>
+
+  <script src="main.js" type="module"></script>
+</body>
+</html>

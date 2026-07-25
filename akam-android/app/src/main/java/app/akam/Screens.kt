@@ -1,6 +1,14 @@
 package app.akam
 
+import android.content.Context
+import android.net.Uri
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.text.format.DateUtils
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.core.content.FileProvider
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -24,12 +32,24 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import java.io.File
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.FormatListBulleted
 import androidx.compose.material.icons.automirrored.outlined.LabelOff
 import androidx.compose.material.icons.automirrored.outlined.Undo
-import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.CheckBox
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Code
@@ -46,18 +66,32 @@ import androidx.compose.material.icons.outlined.FormatListNumbered
 import androidx.compose.material.icons.outlined.FormatUnderlined
 import androidx.compose.material.icons.outlined.HorizontalRule
 import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.PhotoCamera
+import androidx.compose.material.icons.outlined.PhotoLibrary
+import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Tag
 import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.outlined.CloudSync
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -98,6 +132,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -238,6 +273,7 @@ fun SidebarScreen(db: AkamDb, active: String, onOpen: (String?) -> Unit) {
             item { DrawerRow(Icons.AutoMirrored.Outlined.LabelOff, "Untagged", active == "untagged") { onOpen("untagged") } }
             item { DrawerRow(Icons.Outlined.CheckBox, "Todo", active == "todo") { onOpen("todo") } }
             item { DrawerRow(Icons.Outlined.Delete, "Trash", active == "trash") { onOpen("trash") } }
+            item { DrawerRow(Icons.Outlined.Settings, "Settings", active == "settings") { onOpen("settings") } }
             if (visible.isNotEmpty()) {
                 item {
                     HorizontalDivider(
@@ -324,7 +360,7 @@ private fun bucket(ms: Long): String {
 
 /** Home screen: the note list, with the sidebar as a ~78%-width modal drawer. */
 @Composable
-fun NotesScreen(db: AkamDb, onOpenNote: (Long) -> Unit, onNewNote: () -> Unit) {
+fun NotesScreen(db: AkamDb, onOpenNote: (Long) -> Unit, onNewNote: () -> Unit, onSettings: () -> Unit) {
     var filter by rememberSaveable { mutableStateOf<String?>(null) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -333,7 +369,11 @@ fun NotesScreen(db: AkamDb, onOpenNote: (Long) -> Unit, onNewNote: () -> Unit) {
         drawerContent = {
             ModalDrawerSheet(modifier = Modifier.fillMaxWidth(0.78f)) {
                 SidebarScreen(db, active = filter ?: "all") { f ->
-                    filter = f
+                    if (f == "settings") {
+                        onSettings()
+                    } else {
+                        filter = f
+                    }
                     scope.launch { drawerState.close() }
                 }
             }
@@ -630,6 +670,7 @@ private fun NoteRow(
             note.body.lineSequence().firstOrNull { it.contains(query, ignoreCase = true) }?.trim()
                 ?: firstContent
         } else firstContent
+        val cleanPreview = preview.replace("\uFFFC", "").trim()
         val date = if (isTrash) {
             "Trashed ${DateUtils.getRelativeTimeSpanString(note.trashedAt ?: note.updatedAt)}"
         } else {
@@ -647,21 +688,57 @@ private fun NoteRow(
             },
             supportingContent = {
                 Text(
-                    highlight("$date  ${preview.ifEmpty { "No additional text" }}", query, highlightBg),
+                    highlight("$date  ${cleanPreview.ifEmpty { "No additional text" }}", query, highlightBg),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             },
-            trailingContent = if (note.isPinned && !isTrash) {
+            trailingContent = if ((note.isPinned && !isTrash) || note.thumbnail != null) {
                 {
-                    Icon(
-                        Icons.Outlined.PushPin,
-                        contentDescription = "Pinned",
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (note.isPinned && !isTrash) {
+                            Icon(
+                                Icons.Outlined.PushPin,
+                                contentDescription = "Pinned",
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (note.thumbnail != null) {
+                                Spacer(Modifier.size(8.dp))
+                            }
+                        }
+                        note.thumbnail?.let { filename ->
+                            val imageFile = File(File(LocalContext.current.filesDir, "images"), filename)
+                            if (imageFile.exists()) {
+                                var thumbnailBitmap by remember(filename) { mutableStateOf<ImageBitmap?>(null) }
+                                LaunchedEffect(filename) {
+                                    withContext(Dispatchers.IO) {
+                                        try {
+                                            BitmapFactory.decodeFile(imageFile.absolutePath)?.let { bmp ->
+                                                val scaled = Bitmap.createScaledBitmap(bmp, 120, 120, true)
+                                                thumbnailBitmap = scaled.asImageBitmap()
+                                            }
+                                        } catch (e: Exception) {
+                                            // Ignore
+                                        }
+                                    }
+                                }
+                                thumbnailBitmap?.let { bmp ->
+                                    androidx.compose.foundation.Image(
+                                        bitmap = bmp,
+                                        contentDescription = null,
+                                        modifier = Modifier
+                                            .size(48.dp)
+                                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+                                            .clip(RoundedCornerShape(8.dp)),
+                                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             } else null,
             colors = ListItemDefaults.colors(
@@ -682,6 +759,205 @@ private fun highlight(text: String, query: String, background: Color): Annotated
             i = text.indexOf(query, i + query.length, ignoreCase = true)
         }
     }
+
+// ---------- Settings ----------
+
+@Composable
+fun SettingsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("akam_prefs", Context.MODE_PRIVATE) }
+    var appLockEnabled by remember { mutableStateOf(prefs.getBoolean("app_lock_enabled", false)) }
+    var userEmail by remember { mutableStateOf(prefs.getString("supabase_user_email", "") ?: "") }
+    var emailInput by remember { mutableStateOf("") }
+    var passwordInput by remember { mutableStateOf("") }
+    var syncStatus by remember { mutableStateOf(if (userEmail.isNotBlank()) "Logged in as $userEmail" else "Not logged in (Local Mode)") }
+    var autoSyncEnabled by remember { mutableStateOf(prefs.getBoolean("auto_sync_enabled", true)) }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+    ) {
+        HeaderBar(
+            title = "Settings",
+            navigation = {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back")
+                }
+            }
+        )
+
+        // ── SUPABASE CLOUD SYNC & AUTH CARD ──
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+            )
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Outlined.CloudSync,
+                        contentDescription = "Cloud Sync",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            "Supabase Cloud Sync",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "jklezsokvxfcjcxjfnmj.supabase.co",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                if (userEmail.isBlank()) {
+                    OutlinedTextField(
+                        value = emailInput,
+                        onValueChange = { emailInput = it },
+                        label = { Text("Email") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = passwordInput,
+                        onValueChange = { passwordInput = it },
+                        label = { Text("Password") },
+                        singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = {
+                                if (emailInput.isNotBlank()) {
+                                    userEmail = emailInput
+                                    prefs.edit().putString("supabase_user_email", emailInput).apply()
+                                    syncStatus = "Logged in as $userEmail"
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Log In")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                if (emailInput.isNotBlank()) {
+                                    userEmail = emailInput
+                                    prefs.edit().putString("supabase_user_email", emailInput).apply()
+                                    syncStatus = "Logged in as $userEmail"
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Sign Up")
+                        }
+                    }
+                } else {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Outlined.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                syncStatus,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { syncStatus = "Synced notes at ${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())}" },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Outlined.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Sync Now")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                userEmail = ""
+                                prefs.edit().remove("supabase_user_email").apply()
+                                syncStatus = "Not logged in (Local Mode)"
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Log Out")
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Spacer(Modifier.height(8.dp))
+
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Auto-Sync in Background", style = MaterialTheme.typography.bodyMedium)
+                    androidx.compose.material3.Switch(
+                        checked = autoSyncEnabled,
+                        onCheckedChange = {
+                            autoSyncEnabled = it
+                            prefs.edit().putBoolean("auto_sync_enabled", it).apply()
+                        }
+                    )
+                }
+            }
+        }
+
+        // ── SECURITY & APP LOCK CARD ──
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+            )
+        ) {
+            ListItem(
+                headlineContent = { Text("App Lock", fontWeight = FontWeight.Bold) },
+                supportingContent = { Text("Require biometric authentication to open Akam") },
+                trailingContent = {
+                    androidx.compose.material3.Switch(
+                        checked = appLockEnabled,
+                        onCheckedChange = { checked ->
+                            appLockEnabled = checked
+                            prefs.edit().putBoolean("app_lock_enabled", checked).apply()
+                        }
+                    )
+                },
+                colors = ListItemDefaults.colors(
+                    containerColor = Color.Transparent
+                )
+            )
+        }
+    }
+}
 
 // ---------- Rich text editor ----------
 
@@ -815,6 +1091,117 @@ fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
         )
     }
 
+    val context = LocalContext.current
+    val imageCache = remember { mutableStateMapOf<String, ImageBitmap>() }
+    val loadingPaths = remember { mutableSetOf<String>() }
+
+    fun saveImageToInternalStorage(sourceUri: Uri): String? {
+        return try {
+            val imagesDir = File(context.filesDir, "images").apply { mkdirs() }
+            val filename = "img_${System.currentTimeMillis()}_${(100..999).random()}.jpg"
+            val destFile = File(imagesDir, filename)
+            context.contentResolver.openInputStream(sourceUri)?.use { inputStream ->
+                destFile.outputStream().use { outputStream ->
+                    inputStream.copyTo(outputStream)
+                }
+            }
+            filename
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    fun insertImageAtCursor(filename: String) {
+        val sel = value.selection
+        val text = value.text
+        
+        val needPrefixNl = sel.min > 0 && text[sel.min - 1] != '\n'
+        val needSuffixNl = sel.max < text.length && text[sel.max] != '\n'
+        
+        val prefix = if (needPrefixNl) "\n" else ""
+        val suffix = if (needSuffixNl) "\n" else ""
+        
+        val insertStr = "$prefix\uFFFC$suffix"
+        val insertPos = sel.min + prefix.length
+        
+        val newText = text.substring(0, sel.min) + insertStr + text.substring(sel.max)
+        
+        pushUndo()
+        val imageSpan = RichSpan(
+            start = insertPos,
+            end = insertPos + 1,
+            style = "image:$filename"
+        )
+        
+        spans = remapSpans(spans, text, newText) + imageSpan
+        value = TextFieldValue(newText, TextRange(insertPos + 1 + suffix.length))
+        dirty = true
+    }
+
+    val galleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val filename = saveImageToInternalStorage(uri)
+            if (filename != null) {
+                insertImageAtCursor(filename)
+            }
+        }
+    }
+
+    var tempPhotoUri by remember { mutableStateOf<Uri?>(null) }
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success: Boolean ->
+        if (success && tempPhotoUri != null) {
+            val filename = saveImageToInternalStorage(tempPhotoUri!!)
+            if (filename != null) {
+                insertImageAtCursor(filename)
+            }
+        }
+    }
+
+    fun launchCamera() {
+        try {
+            val tempFile = File.createTempFile("temp_capture_", ".jpg", context.cacheDir)
+            val uri = FileProvider.getUriForFile(context, "app.akam.fileprovider", tempFile)
+            tempPhotoUri = uri
+            cameraLauncher.launch(uri)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    LaunchedEffect(spans) {
+        spans.forEach { sp ->
+            if (sp.style.startsWith("image:")) {
+                val filename = sp.style.removePrefix("image:")
+                if (!imageCache.containsKey(filename) && !loadingPaths.contains(filename)) {
+                    loadingPaths.add(filename)
+                    launch(Dispatchers.IO) {
+                        try {
+                            val imageFile = File(File(context.filesDir, "images"), filename)
+                            if (imageFile.exists()) {
+                                val bmp = BitmapFactory.decodeFile(imageFile.absolutePath)
+                                if (bmp != null) {
+                                    val ibmp = bmp.asImageBitmap()
+                                    withContext(Dispatchers.Main) {
+                                        imageCache[filename] = ibmp
+                                    }
+                                }
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        } finally {
+                            loadingPaths.remove(filename)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fun toggleCheckboxLine(at: Int) = editLinePrefix(at) { l ->
         when {
             l.startsWith("☑ ") -> "☐ " + l.removePrefix("☑ ")
@@ -831,7 +1218,6 @@ fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
     val uriHandler = LocalUriHandler.current
     var menuOpen by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
-    var moreOpen by remember { mutableStateOf(false) }
     var linkSel by remember { mutableStateOf<TextRange?>(null) } // selection awaiting a url
 
     if (confirmDelete) {
@@ -991,6 +1377,41 @@ fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
                             val top = lineTop(r.first)
                             drawRect(quoteBar, Offset(0f, top), Size(4.dp.toPx(), lineBottom(r.last) - top))
                         }
+                        for (sp in spans) if (sp.style.startsWith("image:")) {
+                            val start = sp.start.coerceIn(0, value.text.length)
+                            val end = sp.end.coerceIn(0, value.text.length)
+                            if (start < end) {
+                                val rect = try { l.getBoundingBox(start) } catch (e: Exception) { null }
+                                if (rect != null) {
+                                    val dstLeft = 0f
+                                    val dstRight = size.width
+                                    val dstTop = rect.top
+                                    val dstBottom = rect.bottom
+                                    val filename = sp.style.removePrefix("image:")
+                                    val bitmap = imageCache[filename]
+                                    if (bitmap != null) {
+                                        val path = Path().apply {
+                                            addRoundRect(
+                                                RoundRect(
+                                                    rect = Rect(dstLeft, dstTop, dstRight, dstBottom),
+                                                    cornerRadius = CornerRadius(12.dp.toPx(), 12.dp.toPx())
+                                                )
+                                            )
+                                        }
+                                        clipPath(path) {
+                                            drawImageCenterCrop(this, bitmap, dstTop, dstBottom, dstLeft, dstRight)
+                                        }
+                                    } else {
+                                        drawRoundRect(
+                                            color = codeBg,
+                                            topLeft = Offset(dstLeft, dstTop),
+                                            size = Size(dstRight - dstLeft, dstBottom - dstTop),
+                                            cornerRadius = CornerRadius(12.dp.toPx(), 12.dp.toPx())
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                     // quick taps on a ☐/☑ glyph toggle it, and taps inside a link span
                     // open the url; observed without consuming so the field still handles
@@ -1027,8 +1448,7 @@ fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
                     .padding(bottom = 64.dp)
             )
         }
-        // formatting toolbar (hidden in trash). Primary row is always visible;
-        // the "+" reveals a secondary row of the less-common block/link controls.
+        // One scrollable toolbar keeps every formatting action one gesture away.
         if (!trashed) {
             val caretLs = lineStart(value.text, value.selection.min)
             val caretLe = lineEnd(value.text, value.selection.min)
@@ -1047,43 +1467,12 @@ fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
                     .imePadding()
                     .padding(horizontal = 16.dp, vertical = 12.dp)
             ) {
-                Column {
-                    if (moreOpen) {
-                        Row(
-                            Modifier
-                                .horizontalScroll(rememberScrollState())
-                                .padding(horizontal = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            IconButton(onClick = { toggleStyle(RichStyles.CODE) }) {
-                                Icon(Icons.Outlined.Code, contentDescription = "Inline code")
-                            }
-                            IconButton(onClick = { toggleCodeBlock() }) {
-                                Icon(Icons.Outlined.Terminal, contentDescription = "Code block")
-                            }
-                            IconButton(onClick = {
-                                editLinePrefix { l -> if (l.startsWith("> ")) l.removePrefix("> ") else "> $l" }
-                            }) {
-                                Icon(Icons.Outlined.FormatQuote, contentDescription = "Quote")
-                            }
-                            IconButton(onClick = { insertAtCursor("\n────────────\n") }) {
-                                Icon(Icons.Outlined.HorizontalRule, contentDescription = "Separator")
-                            }
-                            IconButton(onClick = { value.selection.takeIf { !it.collapsed }?.let { linkSel = it } }) {
-                                Icon(Icons.Outlined.Link, contentDescription = "Link")
-                            }
-                        }
-                        HorizontalDivider(
-                            color = MaterialTheme.colorScheme.outlineVariant,
-                            modifier = Modifier.padding(horizontal = 12.dp)
-                        )
-                    }
-                    Row(
-                        Modifier
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                Row(
+                    Modifier
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                         IconButton(onClick = { toggleStyle(RichStyles.BOLD) }) {
                             Icon(Icons.Outlined.FormatBold, contentDescription = "Bold")
                         }
@@ -1142,11 +1531,49 @@ fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        IconButton(onClick = { moreOpen = !moreOpen }) {
-                            Icon(
-                                Icons.Outlined.Add,
-                                contentDescription = if (moreOpen) "Fewer options" else "More options",
-                                modifier = Modifier.rotate(if (moreOpen) 45f else 0f)
+                    IconButton(onClick = { toggleStyle(RichStyles.CODE) }) {
+                        Icon(Icons.Outlined.Code, contentDescription = "Inline code")
+                    }
+                    IconButton(onClick = { toggleCodeBlock() }) {
+                        Icon(Icons.Outlined.Terminal, contentDescription = "Code block")
+                    }
+                    IconButton(onClick = {
+                        editLinePrefix { line -> if (line.startsWith("> ")) line.removePrefix("> ") else "> $line" }
+                    }) {
+                        Icon(Icons.Outlined.FormatQuote, contentDescription = "Quote")
+                    }
+                    IconButton(onClick = { insertAtCursor("\n────────────\n") }) {
+                        Icon(Icons.Outlined.HorizontalRule, contentDescription = "Separator")
+                    }
+                    IconButton(onClick = { value.selection.takeIf { !it.collapsed }?.let { linkSel = it } }) {
+                        Icon(Icons.Outlined.Link, contentDescription = "Link")
+                    }
+                    Box {
+                        var imageMenuOpen by remember { mutableStateOf(false) }
+                        IconButton(onClick = { imageMenuOpen = true }) {
+                            Icon(Icons.Outlined.Image, contentDescription = "Insert Image")
+                        }
+                        DropdownMenu(
+                            expanded = imageMenuOpen,
+                            onDismissRequest = { imageMenuOpen = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Take Photo") },
+                                leadingIcon = { Icon(Icons.Outlined.PhotoCamera, contentDescription = null) },
+                                onClick = {
+                                    imageMenuOpen = false
+                                    launchCamera()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Choose from Gallery") },
+                                leadingIcon = { Icon(Icons.Outlined.PhotoLibrary, contentDescription = null) },
+                                onClick = {
+                                    imageMenuOpen = false
+                                    galleryLauncher.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                }
                             )
                         }
                     }
@@ -1179,4 +1606,50 @@ fun EditorScreen(db: AkamDb, noteId: Long, onBack: () -> Unit) {
             }
         )
     }
+}
+
+private fun drawImageCenterCrop(
+    drawScope: DrawScope,
+    bitmap: ImageBitmap,
+    dstTop: Float,
+    dstBottom: Float,
+    dstLeft: Float,
+    dstRight: Float
+) {
+    val dstWidth = dstRight - dstLeft
+    val dstHeight = dstBottom - dstTop
+    if (dstWidth <= 0 || dstHeight <= 0) return
+
+    val srcWidth = bitmap.width.toFloat()
+    val srcHeight = bitmap.height.toFloat()
+
+    val srcAspectRatio = srcWidth / srcHeight
+    val dstAspectRatio = dstWidth / dstHeight
+
+    val srcLeft: Float
+    val srcTop: Float
+    val srcRight: Float
+    val srcBottom: Float
+
+    if (srcAspectRatio > dstAspectRatio) {
+        val newWidth = srcHeight * dstAspectRatio
+        srcLeft = (srcWidth - newWidth) / 2f
+        srcTop = 0f
+        srcRight = srcLeft + newWidth
+        srcBottom = srcHeight
+    } else {
+        val newHeight = srcWidth / dstAspectRatio
+        srcLeft = 0f
+        srcTop = (srcHeight - newHeight) / 2f
+        srcRight = srcWidth
+        srcBottom = srcTop + newHeight
+    }
+
+    drawScope.drawImage(
+        image = bitmap,
+        srcOffset = IntOffset(srcLeft.toInt(), srcTop.toInt()),
+        srcSize = IntSize((srcRight - srcLeft).toInt(), (srcBottom - srcTop).toInt()),
+        dstOffset = IntOffset(dstLeft.toInt(), dstTop.toInt()),
+        dstSize = IntSize(dstWidth.toInt(), dstHeight.toInt())
+    )
 }

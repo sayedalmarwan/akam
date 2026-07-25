@@ -1,5 +1,12 @@
 # Rust
+target/
 akam-core/target/
+akam-windows/target/
+
+# Node / JS
+node_modules/
+akam-windows/node_modules/
+akam-windows/dist/
 
 # Gradle / Android
 akam-android/.gradle/
@@ -15,10 +22,14 @@ akam-android/app/src/main/jniLibs/
 .idea/
 *.iml
 .DS_Store
+Thumbs.db
+*.log
 
 # empty .git left by `cargo new`, parked to keep this a single repo
 akam-core/.git-unused-empty/
 
-# Local emulator screenshots used during manual UI checks
-/t*.png
-/g*.png
+# Local screenshots and temp scratch files
+*.png
+*.jpg
+*.jpeg
+*.xml

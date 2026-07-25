@@ -112,5 +112,6 @@ dependencies {
     implementation(libs.jna) {
         artifact { type = "aar" }
     }
+    implementation("androidx.biometric:biometric:1.1.0")
     testImplementation(libs.junit)
 }

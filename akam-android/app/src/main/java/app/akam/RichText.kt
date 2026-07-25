@@ -13,6 +13,7 @@ import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.sp
 import uniffi.akam.RichSpan
 
@@ -190,9 +191,13 @@ internal fun richAnnotated(text: String, spans: List<RichSpan>, cs: ColorScheme)
             RichStyles.H1 -> SpanStyle(fontSize = 24.sp, fontWeight = FontWeight.Bold)
             RichStyles.H2 -> SpanStyle(fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
             RichStyles.H3 -> SpanStyle(fontSize = 17.sp, fontWeight = FontWeight.Medium)
-            else -> if (sp.style.startsWith(RichStyles.LINK_PREFIX))
-                SpanStyle(color = cs.primary, textDecoration = TextDecoration.Underline)
-            else continue
+            else -> when {
+                sp.style.startsWith(RichStyles.LINK_PREFIX) ->
+                    SpanStyle(color = cs.primary, textDecoration = TextDecoration.Underline)
+                sp.style.startsWith("image:") ->
+                    SpanStyle(fontSize = 180.sp, color = Color.Transparent)
+                else -> continue
+            }
         }
         builder.addStyle(style, s, e)
     }
