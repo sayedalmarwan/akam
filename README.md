@@ -52,31 +52,7 @@
   - **`Ctrl` + Mouse Wheel**: Dynamic editor font zoom (`12px` to `28px`).
   - **Mouse Back Button (`Mouse4`) / `Escape`**: Instant back navigation.
 
----
 
-## 🏗️ Architecture Overview
-
-```mermaid
-graph TD
-    subgraph Shared Core
-        R[akam-core / Rust Engine] --> SQL[(SQLite Database)]
-        R --> FTS5[FTS5 Full-Text Search]
-        R --> REVS[Note Revision History]
-        R --> SUPA[Supabase Sync Client]
-    end
-
-    subgraph Desktop Application
-        W[akam-windows / Tauri v2] -->|IPC| R
-        W --> JS[HTML5 / Vanilla JS UI]
-        W --> CSS[Windows 11 Fluent Theme]
-    end
-
-    subgraph Android Application
-        A[akam-android / Jetpack Compose] -->|UniFFI Bindings| R
-        A --> M3[Material 3 UI System]
-        A --> BIO[Biometric Lock System]
-    end
-```
 
 ---
 
