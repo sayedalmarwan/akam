@@ -11,6 +11,7 @@
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.0%2B-7F52FF.svg?style=for-the-badge&logo=kotlin)](https://kotlinlang.org/)
 [![Tauri](https://img.shields.io/badge/Tauri-v2-24C8D8.svg?style=for-the-badge&logo=tauri)](https://tauri.app/)
 [![Supabase](https://img.shields.io/badge/Supabase-Sync-3FCF8E.svg?style=for-the-badge&logo=supabase)](https://supabase.com/)
+[![Releases](https://img.shields.io/badge/Download-v1.0.0_Release-blue.svg?style=for-the-badge&logo=github)](https://github.com/sayedalmarwan/akam/releases/tag/v1.0.0)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 
 </div>
